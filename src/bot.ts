@@ -3,7 +3,7 @@ import csvParser, * as parser from 'csv-parser'
 import { Readable } from 'stream'
 import * as cron from 'cron'
 import * as fetch from 'node-fetch'
-import { DataReport, ReportDataPoint, ArchiveHttp } from 'symbol-archive-sdk'
+import { DataReport, ReportDataPoint, ArchiveHttp } from 'ants-protocol-sdk'
 import { TransactionAnnounceResponse, Account, NetworkType } from 'symbol-sdk'
 
 export class CovidReportingBot {
@@ -11,15 +11,6 @@ export class CovidReportingBot {
     private trackerBaseUrl = 'https://covidtracking.com/api'
     private archiveHttp: ArchiveHttp
     private account: Account
-
-    private formatMonth = (date: Date) => {
-        const month = (date.getMonth() + 1).toString()
-        return month.charAt(0) == '1' ? month.toString() : `0${month.toString()}`
-    }
-    private formatDay = (date: Date) => {
-        const day = (date.getDate()).toString()
-        return parseInt(day.charAt(0)) > 10 ? day.toString() : `0${day.toString()}`
-    }
 
     constructor(
         nodeUrl: string,
@@ -30,22 +21,26 @@ export class CovidReportingBot {
     }
 
     public start() {
-        this.fetchAndSendAllData()
         const night = '59 23 * * *'
-        const minute = '* * * * *'
+        const minute = '* * * * * *'
         cron.job({
             cronTime: night, onTick: () => {
-                const date = new Date()
-                const calculateDateFormatted: string = `${this.formatMonth(date)}-${this.formatDay(date)}-${date.getFullYear()}.csv`
-                console.log(calculateDateFormatted)
-                const url = this.trackerBaseUrl + calculateDateFormatted
-
+                this.fetchAndSendAllData().then((response) => console.log(response))
             }
         }).start()
     }
+
+    private filterNullFromNumber(val: any, param: string): number {
+        return val[`${param}`] != null ? val[`${param}`] : 0
+    }
+
+    private filterNullFromString(val: any, param: string): string {
+        return val[`${param}`] != null ? val[`${param}`] : "none"
+    }
+
     private fetchAndSendAllData(): Promise<TransactionAnnounceResponse> {
         let datapoints: ReportDataPoint[] = []
-        let dailyUsData: IUsCasesTestingProgression
+        let perState: IPerStateTestReport[] = []
 
         let endpoints = ['/v1/states/info.json', '/v1/states/current.json', '/us']
         return Promise.all(endpoints.map((endpoint) =>
@@ -55,33 +50,48 @@ export class CovidReportingBot {
         )
         ).then((allData) => {
             (allData[1] as any[]).forEach((data: any) => {
-                datapoints.push(
-                    ReportDataPoint.fromInterfaceToDataPoint<IPerStateTestReport>('perStateReport', {
+                const pending = this.filterNullFromNumber(data, "pending")
+                const inIcuCurrently = this.filterNullFromNumber(data, "inIcuCurrently")
+                const inIcuCumulative = this.filterNullFromNumber(data, "inIcuCumulative")
+                const grade = this.filterNullFromString(data, "grade")
+                const onVentilatorCumulative = this.filterNullFromNumber(data, "onVentilatorCumulative")
+                const onVentilatorCurrently = this.filterNullFromNumber(data, "onVentilatorCurrently")
+                const recovered = this.filterNullFromNumber(data, "recovered")
+                const hospitalized = this.filterNullFromNumber(data, "hospitalized")
+                const death = this.filterNullFromNumber(data, "death")
+
+                perState.push(
+                    {
                         state: data.state,
                         positive: data.positive,
                         negative: data.negative,
-                        pending: data.pending,
-                        grade: data.grade,
-                        inIcuCumulative: data.inIcuCumulative,
-                        inIcuCurrently: data.inIcuCurrently,
-                        onVentilatorCumulative: data.onVentilatorCumulative,
-                        onVentilatorCurrently: data.onVentilatorCurrently,
-                        recovered: data.recovered,
+                        pending: pending,
+                        grade: grade,
+                        inIcuCurrently: inIcuCurrently,
+                        inIcuCumulative: inIcuCumulative,
+                        onVentilatorCurrently: onVentilatorCurrently,
+                        onVentilatorCumulative: onVentilatorCumulative,
+                        recovered: recovered,
                         lastUpdate: data.lastUpdateEt,
-                        death: data.death,
-                        hospitalized: data.hospitalized,
+                        death: death,
+                        hospitalized: hospitalized,
                         totalTestResults: data.totalTestResults,
                         dateModified: data.dateModified,
                         dateChecked: data.dateChecked,
                         sourceForState: (allData[0] as any[]).find((item) => item.state === data.state).covid19Site,
-                    }))
+                    }
+                )
+
             })
 
             delete allData[2][0].notes
-
             datapoints.push(
                 ReportDataPoint
-                    .fromInterfaceToDataPoint<IUsCasesTestingProgression>('usOverallTestingProgression', allData[2][0]))
+                    .fromInterfaceToDataPoint('usOverallTestingProgression', allData[2][0], false))
+
+            datapoints.push(
+                ReportDataPoint.fromInterfaceToDataPoint('perStateReport', perState, true)
+            )
 
             const report = new DataReport('uscovid', 'https://covidtracking.com', datapoints)
 
