@@ -26,7 +26,7 @@ export class CovidReportingBot {
         const night = '59 23 * * *'
         const minute = '* * * * * *'
         cron.job({
-            cronTime: minute, onTick: () => {
+            cronTime: night, onTick: () => {
                 this.fetchAndSendAllData().then((response) => console.log(response)).catch((e) => console.log("error", e))
             }
         }).start()
